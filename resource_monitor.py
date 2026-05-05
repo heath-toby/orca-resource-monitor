@@ -11,9 +11,12 @@ Plus Orca+Ctrl+Shift+4 for an on-demand network speed test.
 
 from __future__ import annotations
 
+__version__ = "1.0.0"
+
 import logging
 import platform
 import subprocess
+import threading
 import time
 
 import psutil
@@ -39,6 +42,32 @@ def _run_cmd(args: list[str], timeout: int = 3) -> str | None:
     return None
 
 
+def _nmcli_split(line: str) -> list[str]:
+    """Split an nmcli ``-t`` (terse-mode) line on unescaped ``:`` and
+    unescape ``\\:`` and ``\\\\`` in each field. nmcli escapes literal
+    colons inside field values, so a connection name like ``Home: 5G``
+    would mis-parse with naive ``str.split(':')``.
+    """
+    fields: list[str] = []
+    buf: list[str] = []
+    i = 0
+    n = len(line)
+    while i < n:
+        c = line[i]
+        if c == "\\" and i + 1 < n:
+            buf.append(line[i + 1])
+            i += 2
+        elif c == ":":
+            fields.append("".join(buf))
+            buf = []
+            i += 1
+        else:
+            buf.append(c)
+            i += 1
+    fields.append("".join(buf))
+    return fields
+
+
 def _format_size(bytes_val: float) -> str:
     if bytes_val >= 1024**3:
         return f"{bytes_val / 1024**3:.1f} gigabytes"
@@ -51,6 +80,10 @@ def _format_size(bytes_val: float) -> str:
 
 
 def _format_duration(seconds: float) -> str:
+    if seconds < 0:
+        # Reachable only via NTP step or clock skew; would otherwise
+        # produce nonsense like "23 hours, 59 minutes" for -30 s.
+        return "less than a minute"
     seconds = int(seconds)
     days, seconds = divmod(seconds, 86400)
     hours, seconds = divmod(seconds, 3600)
@@ -188,7 +221,7 @@ def handle_network(script, event=None):
 
         connections = []
         for line in output.splitlines():
-            fields = line.split(":")
+            fields = _nmcli_split(line)
             if len(fields) < 3:
                 continue
             conn_type, name, device = fields[0], fields[1], fields[2]
@@ -216,7 +249,7 @@ def handle_network(script, event=None):
                 )
                 if wifi_out:
                     for wline in wifi_out.splitlines():
-                        wfields = wline.split(":")
+                        wfields = _nmcli_split(wline)
                         if len(wfields) >= 2 and wfields[0] == "*":
                             msg += f". Signal: {wfields[1]} percent"
                             if len(wfields) >= 3:
@@ -272,6 +305,15 @@ _SPEEDTEST_DOWN_DURATION = 5.0
 _SPEEDTEST_UPLOAD_BYTES = 25_000_000
 _SPEEDTEST_PHASE_TIMEOUT = 30
 
+# Re-entrancy guard for handle_speedtest. The test takes ~10 seconds
+# with no progress feedback after the initial "please wait", so a user
+# can easily press Ctrl+Shift+4 again before the first test finishes.
+# Without this, concurrent threads would interleave their speech and
+# both report inaccurate numbers because they're competing for
+# bandwidth.
+_speedtest_lock = threading.Lock()
+_speedtest_running = False
+
 
 def _measure_ping(target: str = "1.1.1.1", count: int = 5) -> float | None:
     """Average ICMP RTT to ``target`` in milliseconds, or None on failure."""
@@ -308,17 +350,33 @@ def _measure_download(
     start = time.monotonic()
     deadline = start + duration
     bytes_read = 0
+    consecutive_empty = 0
     try:
         while time.monotonic() < deadline:
             req = urllib.request.Request(
-                url, headers={"User-Agent": "orca-resource-monitor/1.1"}
+                url, headers={"User-Agent": "orca-resource-monitor/1.0"}
             )
+            this_request_bytes = 0
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 while time.monotonic() < deadline:
                     chunk = resp.read(65536)
                     if not chunk:
                         break  # response exhausted; outer loop opens another
                     bytes_read += len(chunk)
+                    this_request_bytes += len(chunk)
+            # Guard against a degenerate proxy/CDN that 200-OKs empty
+            # bodies — without this we'd open hundreds of connections
+            # in the time window and report 0 bytes/sec anyway.
+            if this_request_bytes == 0:
+                consecutive_empty += 1
+                if consecutive_empty >= 5:
+                    _log.warning(
+                        "Download test: %d consecutive empty responses, "
+                        "bailing", consecutive_empty,
+                    )
+                    break
+            else:
+                consecutive_empty = 0
     except Exception as e:
         _log.warning("Download speed test failed: %s", e)
         # Keep partial result if we got at least one full second of data.
@@ -371,13 +429,21 @@ def handle_speedtest(script, event=None):
     independently — ping, download, upload — so partial failures
     still produce useful output.
     """
+    global _speedtest_running
+
     try:
         from gi.repository import GLib
-        import threading
     except ImportError as e:
         _log.error("Speed test setup failed: %s", e)
         _speak("Speed test unavailable")
         return True
+
+    # Re-entrancy guard — see comment on _speedtest_lock.
+    with _speedtest_lock:
+        if _speedtest_running:
+            _speak("Speed test already in progress")
+            return True
+        _speedtest_running = True
 
     def _speak_main(msg: str) -> None:
         # GLib.idle_add expects a callable returning False to stop.
@@ -389,6 +455,7 @@ def handle_speedtest(script, event=None):
     _speak("Testing speed. Please wait.")
 
     def run_test() -> None:
+        global _speedtest_running
         try:
             ping_ms = _measure_ping()
             if ping_ms is not None:
@@ -414,6 +481,9 @@ def handle_speedtest(script, event=None):
         except Exception as e:
             _log.error("Speed test thread crashed: %s", e)
             _speak_main("Speed test failed")
+        finally:
+            with _speedtest_lock:
+                _speedtest_running = False
 
     threading.Thread(target=run_test, daemon=True).start()
     return True
