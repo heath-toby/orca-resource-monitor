@@ -5,6 +5,50 @@ All notable changes to Orca Resource Monitor are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] — 2026-05-05
+
+A polish release. The four items deferred from the v1.0 audit, plus a
+new battery-time backend.
+
+### Changed
+
+- **Battery time-remaining now prefers `upower`** when available. UPower
+  runs as a system service on most modern Linux desktops and synthesises
+  a smoothed energy-rate even on AMD systems that only expose
+  `current_now`/`charge_now` — matching the number GNOME's own battery
+  applet reports. Falls back through psutil's reported value, then raw
+  sysfs (charge-based, then energy-based), keeping older / minimal
+  systems working.
+- Top-process readout in `Orca+Shift+0` now samples over **300 ms
+  instead of 100 ms**. Many-core systems were producing jittery results
+  in the shorter window — bursty processes blipped in and out of the
+  sample.
+- Battery time estimation gained an **energy-based sysfs path**
+  (`energy_now` / `power_now`) for newer Intel laptops that don't
+  expose `charge_now` / `current_now`. AMD machines (which expose
+  charge-based fields) now also get the upower-derived estimate.
+
+### Fixed
+
+- **UPower output is now invoked with `LC_ALL=C`** so the decimal
+  parser doesn't silently fall through on non-English locales.
+  Previously, `upower` in (e.g.) de_DE printed `3,6 hours` and
+  `float("3,6")` raised `ValueError`, disabling the entire upower path
+  for any user in a comma-decimal locale (most of Europe and LATAM).
+
+### Internal
+
+- `_run_cmd` gained an optional `env` parameter for callers that need
+  to override the inherited environment.
+- `urllib.request` import moved to module top (out of the speedtest
+  hot path).
+- Redundant `Content-Length` header dropped from `_measure_upload` —
+  `urllib.request` sets it automatically when `data=` is bytes.
+- New `_ratio_to_duration` helper extracted from
+  `_estimate_battery_time` so the charge-based and energy-based sysfs
+  paths share their arithmetic.
+- `__version__` constant added at module top.
+
 ## [1.0.0] — 2026-05-05
 
 First tagged release. The repository had been in pre-1.0 churn —

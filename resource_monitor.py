@@ -11,13 +11,15 @@ Plus Orca+Ctrl+Shift+4 for an on-demand network speed test.
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 import logging
+import os
 import platform
 import subprocess
 import threading
 import time
+import urllib.request
 
 import psutil
 
@@ -30,10 +32,20 @@ def _speak(msg: str) -> None:
     presentation_manager.get_manager().present_message(msg)
 
 
-def _run_cmd(args: list[str], timeout: int = 3) -> str | None:
+def _run_cmd(
+    args: list[str],
+    timeout: int = 3,
+    env: dict[str, str] | None = None,
+) -> str | None:
+    """Run a subprocess and return stripped stdout, or None on failure.
+
+    ``env`` overrides the inherited environment when set — pass a full
+    dict (e.g. ``{**os.environ, "LC_ALL": "C"}``) to force a specific
+    locale or other env vars on the child without unsetting the rest.
+    """
     try:
         result = subprocess.run(
-            args, capture_output=True, text=True, timeout=timeout
+            args, capture_output=True, text=True, timeout=timeout, env=env,
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -346,7 +358,6 @@ def _measure_download(
     fast connection one response runs out before the duration. We loop
     and chain requests, accumulating total bytes, until the deadline.
     """
-    import urllib.request
     start = time.monotonic()
     deadline = start + duration
     bytes_read = 0
@@ -394,16 +405,15 @@ def _measure_upload(
     timeout: float = _SPEEDTEST_PHASE_TIMEOUT,
 ) -> float | None:
     """Upload a fixed payload to ``url``. Return bytes/sec."""
-    import urllib.request
     payload = b"\0" * payload_bytes
+    # urllib.request sets Content-Length automatically when data= is bytes.
     req = urllib.request.Request(
         url,
         data=payload,
         method="POST",
         headers={
-            "User-Agent": "orca-resource-monitor/1.1",
+            "User-Agent": "orca-resource-monitor/1.0",
             "Content-Type": "application/octet-stream",
-            "Content-Length": str(payload_bytes),
         },
     )
     start = time.monotonic()
@@ -498,7 +508,23 @@ def _read_sysfs_int(path: str) -> int | None:
 
 
 def _estimate_battery_time(battery) -> str | None:
-    """Estimate battery time from psutil or sysfs when psutil doesn't provide it."""
+    """Estimate battery time. Prefers upower, then psutil, then raw sysfs.
+
+    Resolution order:
+      1. ``upower`` — synthesises a smoothed energy-rate even on AMD
+         systems that only expose charge/current (it derives energy from
+         charge × voltage internally), and matches the number the rest
+         of the desktop power-management stack reports. Always preferred
+         when available.
+      2. psutil's ``secsleft`` — kernel-reported when present.
+      3. Raw sysfs math, charge-based then energy-based — fallback for
+         systems where upower isn't installed or the daemon isn't
+         running.
+    """
+    upower_est = _upower_time_remaining(battery.power_plugged)
+    if upower_est is not None:
+        return upower_est
+
     if battery.secsleft not in (
         psutil.POWER_TIME_UNLIMITED,
         psutil.POWER_TIME_UNKNOWN,
@@ -506,23 +532,96 @@ def _estimate_battery_time(battery) -> str | None:
         return _format_duration(battery.secsleft)
 
     bat_path = "/sys/class/power_supply/BAT0"
-    current = _read_sysfs_int(f"{bat_path}/current_now")
-    if not current or current == 0:
-        return None
 
-    if battery.power_plugged:
-        charge_full = _read_sysfs_int(f"{bat_path}/charge_full")
-        charge_now = _read_sysfs_int(f"{bat_path}/charge_now")
-        if charge_full is not None and charge_now is not None:
-            remaining = charge_full - charge_now
-            if remaining > 0:
-                return _format_duration(remaining / current * 3600)
-    else:
-        charge_now = _read_sysfs_int(f"{bat_path}/charge_now")
-        if charge_now is not None and charge_now > 0:
-            return _format_duration(charge_now / current * 3600)
+    # Try charge-based first, then energy-based. Either pair of fields
+    # may be absent on a given platform; the helper below tries both.
+    rate_charge = _read_sysfs_int(f"{bat_path}/current_now")
+    rate_energy = _read_sysfs_int(f"{bat_path}/power_now")
+
+    if rate_charge and rate_charge > 0:
+        full = _read_sysfs_int(f"{bat_path}/charge_full")
+        now = _read_sysfs_int(f"{bat_path}/charge_now")
+        return _ratio_to_duration(full, now, rate_charge, battery.power_plugged)
+    if rate_energy and rate_energy > 0:
+        full = _read_sysfs_int(f"{bat_path}/energy_full")
+        now = _read_sysfs_int(f"{bat_path}/energy_now")
+        return _ratio_to_duration(full, now, rate_energy, battery.power_plugged)
 
     return None
+
+
+def _upower_time_remaining(power_plugged: bool) -> str | None:
+    """Ask UPower for a smoothed time-to-empty / time-to-full estimate.
+
+    Returns a formatted duration string, or None if UPower isn't
+    available, the daemon isn't running, no battery is reported, or
+    the relevant time field is absent (e.g. fully charged with AC
+    plugged — no "time to full" needed).
+    """
+    # Force C locale: upower otherwise emits decimals using the user's
+    # locale separator (e.g. "3,6 hours" in de_DE), which float() won't
+    # parse, silently disabling this whole code path for non-English
+    # locales. Same trick for any future label-string parsing — though
+    # the current "time to empty" / "time to full" labels stay English
+    # under LC_ALL=C.
+    upower_env = {**os.environ, "LC_ALL": "C"}
+    devices = _run_cmd(["upower", "-e"], timeout=2, env=upower_env)
+    if not devices:
+        return None
+    bat_path = None
+    for line in devices.splitlines():
+        if "battery_" in line.lower():
+            bat_path = line.strip()
+            break
+    if not bat_path:
+        return None
+    info = _run_cmd(["upower", "-i", bat_path], timeout=2, env=upower_env)
+    if not info:
+        return None
+
+    target = "time to full" if power_plugged else "time to empty"
+    for line in info.splitlines():
+        stripped = line.strip().lower()
+        if not stripped.startswith(target):
+            continue
+        # e.g. "time to empty:        3.6 hours" / "28 minutes" / "45 seconds"
+        value = stripped.split(":", 1)[1].strip()
+        try:
+            num_str, unit = value.split(None, 1)
+            num = float(num_str)
+            unit = unit.lower()
+            if "second" in unit:
+                seconds = num
+            elif "minute" in unit:
+                seconds = num * 60
+            elif "hour" in unit:
+                seconds = num * 3600
+            elif "day" in unit:
+                seconds = num * 86400
+            else:
+                return None
+            if seconds <= 0:
+                return None
+            return _format_duration(seconds)
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
+def _ratio_to_duration(full, now, rate, power_plugged):
+    """Compute time-to-empty (or time-to-full) and format as a duration."""
+    if rate is None or rate <= 0 or now is None:
+        return None
+    if power_plugged:
+        if full is None:
+            return None
+        remaining = full - now
+        if remaining <= 0:
+            return None
+        return _format_duration(remaining / rate * 3600)
+    if now <= 0:
+        return None
+    return _format_duration(now / rate * 3600)
 
 
 def handle_battery(script, event=None):
@@ -692,6 +791,9 @@ def handle_system_load(script, event=None):
             # against. Prime by sampling once, sleeping briefly, then
             # reading the real values, so the first invocation of this
             # handler in a session reports a top process like the rest.
+            # 300 ms is the empirical sweet spot: 100 ms produced jittery
+            # readings on many-core systems where bursty processes blip
+            # in and out within the window; 300 ms gives a stable top.
             procs = []
             sampled = []
             for p in psutil.process_iter(["name"]):
@@ -700,7 +802,7 @@ def handle_system_load(script, event=None):
                     sampled.append(p)
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
-            time.sleep(0.1)
+            time.sleep(0.3)
             for p in sampled:
                 try:
                     name = p.info.get("name")
