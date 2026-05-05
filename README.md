@@ -13,7 +13,7 @@ All shortcuts use **Orca+Shift+number**.
 | Orca+Shift+1 | CPU usage: average load and per-thread breakdown (NVDA-style) |
 | Orca+Shift+2 | RAM and swap: physical and swap memory used/total/percent (`free -h`-style) |
 | Orca+Shift+3 | Storage volumes with used/total/percent (BTRFS-aware, deduplicates subvolumes) |
-| Orca+Shift+4 | Network status: connection name, Wi-Fi/Ethernet, signal or speed, IP address |
+| Orca+Shift+4 | Network status: connection name, Wi-Fi/Ethernet, signal, link speed (megabytes per second), IP address |
 | Orca+Shift+5 | Battery: percentage, charging state, estimated time remaining |
 | Orca+Shift+6 | System uptime |
 | Orca+Shift+7 | OS info: distribution, kernel version, architecture |

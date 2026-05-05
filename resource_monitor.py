@@ -205,8 +205,11 @@ def handle_network(script, event=None):
                 # --rescan no: read the cached scan instead of triggering a
                 # fresh radio scan, which can take several seconds and would
                 # block Orca's main thread for the whole timeout.
+                # RATE is the current link bitrate (varies dynamically on
+                # wireless); psutil's net_if_stats.speed always reports -1
+                # for WiFi because the kernel doesn't expose a fixed value.
                 wifi_out = _run_cmd(
-                    ["nmcli", "-t", "-f", "IN-USE,SIGNAL,FREQ",
+                    ["nmcli", "-t", "-f", "IN-USE,SIGNAL,RATE",
                      "device", "wifi", "list", "--rescan", "no"]
                 )
                 if wifi_out:
@@ -214,12 +217,29 @@ def handle_network(script, event=None):
                         wfields = wline.split(":")
                         if len(wfields) >= 2 and wfields[0] == "*":
                             msg += f". Signal: {wfields[1]} percent"
+                            if len(wfields) >= 3:
+                                # nmcli prints e.g. "1170 Mbit/s" or "0 Mbit/s"
+                                rate_str = wfields[2].strip()
+                                try:
+                                    mbps = int(rate_str.split()[0])
+                                    if mbps > 0:
+                                        msg += (
+                                            f". Speed: {mbps / 8:.1f} "
+                                            "megabytes per second"
+                                        )
+                                except (ValueError, IndexError):
+                                    pass
                             break
             elif "ethernet" in conn_type:
                 msg = f"Ethernet: connected via {name}"
                 stats = psutil.net_if_stats().get(device)
                 if stats and stats.speed > 0:
-                    msg += f". Speed: {stats.speed} megabits"
+                    # psutil exposes the negotiated link speed (max
+                    # theoretical bandwidth) in Mbit/s. Convert to
+                    # megabytes per second (divide by 8, base-10).
+                    msg += (
+                        f". Speed: {stats.speed / 8:.1f} megabytes per second"
+                    )
             else:
                 msg = f"{name}: connected on {device}"
 
