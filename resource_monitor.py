@@ -80,7 +80,7 @@ _MOUNT_LABELS = {
     "/home": "Home",
 }
 
-_REAL_FS_TYPES = {"btrfs", "ext4", "ext3", "ext2", "xfs", "f2s", "ntfs", "vfat", "exfat", "zfs"}
+_REAL_FS_TYPES = {"btrfs", "ext4", "ext3", "ext2", "xfs", "f2fs", "ntfs", "vfat", "exfat", "zfs"}
 
 
 def handle_cpu(script, event=None):
@@ -202,8 +202,12 @@ def handle_network(script, event=None):
         for conn_type, name, device in connections:
             if "wireless" in conn_type:
                 msg = f"Wi-Fi: connected to {name}"
+                # --rescan no: read the cached scan instead of triggering a
+                # fresh radio scan, which can take several seconds and would
+                # block Orca's main thread for the whole timeout.
                 wifi_out = _run_cmd(
-                    ["nmcli", "-t", "-f", "IN-USE,SIGNAL,FREQ", "device", "wifi", "list"]
+                    ["nmcli", "-t", "-f", "IN-USE,SIGNAL,FREQ",
+                     "device", "wifi", "list", "--rescan", "no"]
                 )
                 if wifi_out:
                     for wline in wifi_out.splitlines():
@@ -426,18 +430,32 @@ def handle_system_load(script, event=None):
                     if entries:
                         temp = round(entries[0].current)
                         parts.append(f"CPU temperature: {temp} degrees")
-                    break
+                        break
 
         pids = psutil.pids()
         parts.append(f"{len(pids)} processes running")
 
         try:
+            # psutil's per-process cpu_percent returns 0.0 the first time
+            # it's called for a given PID — there's no baseline to compare
+            # against. Prime by sampling once, sleeping briefly, then
+            # reading the real values, so the first invocation of this
+            # handler in a session reports a top process like the rest.
             procs = []
-            for p in psutil.process_iter(["name", "cpu_percent"]):
+            sampled = []
+            for p in psutil.process_iter(["name"]):
                 try:
-                    info = p.info
-                    if info["name"] and info["cpu_percent"] is not None:
-                        procs.append(info)
+                    p.cpu_percent(interval=None)
+                    sampled.append(p)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            time.sleep(0.1)
+            for p in sampled:
+                try:
+                    name = p.info.get("name")
+                    pct = p.cpu_percent(interval=None)
+                    if name and pct is not None:
+                        procs.append({"name": name, "cpu_percent": pct})
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
             if procs:
