@@ -5,6 +5,8 @@ Provides system resource monitoring commands bound to Orca+Shift+number keys:
   4: Network status     5: Battery info       6: Uptime
   7: OS info            8: Audio output       9: Audio input
   0: System load + temps
+
+Plus Orca+Ctrl+Shift+4 for an on-demand network speed test.
 """
 
 from __future__ import annotations
@@ -255,6 +257,165 @@ def handle_network(script, event=None):
     except Exception as e:
         _log.error("Network info error: %s", e, exc_info=True)
         _speak("Network information unavailable")
+    return True
+
+
+# Cloudflare's public speed-test endpoints. Used by their own tool;
+# no signup, no per-user tracking beyond standard CF logs. Most
+# privacy-respecting realistic choice short of self-hosting.
+# `__down` rejects bytes>~50e6 with a 403, so a download phase on a
+# fast connection has to chain multiple requests within the duration
+# window — see _measure_download.
+_SPEEDTEST_DOWN_URL = "https://speed.cloudflare.com/__down?bytes=50000000"
+_SPEEDTEST_UP_URL = "https://speed.cloudflare.com/__up"
+_SPEEDTEST_DOWN_DURATION = 5.0
+_SPEEDTEST_UPLOAD_BYTES = 25_000_000
+_SPEEDTEST_PHASE_TIMEOUT = 30
+
+
+def _measure_ping(target: str = "1.1.1.1", count: int = 5) -> float | None:
+    """Average ICMP RTT to ``target`` in milliseconds, or None on failure."""
+    out = _run_cmd(
+        ["ping", "-c", str(count), "-W", "2", target],
+        timeout=count * 3 + 2,
+    )
+    if not out:
+        return None
+    for line in out.splitlines():
+        # iputils prints e.g. "rtt min/avg/max/mdev = 3.805/3.817/3.834/0.012 ms"
+        if "=" in line and ("rtt" in line.lower() or "round-trip" in line.lower()):
+            try:
+                values = line.split("=", 1)[1].strip().split()[0].split("/")
+                if len(values) >= 2:
+                    return float(values[1])
+            except (ValueError, IndexError):
+                return None
+    return None
+
+
+def _measure_download(
+    url: str = _SPEEDTEST_DOWN_URL,
+    duration: float = _SPEEDTEST_DOWN_DURATION,
+    timeout: float = _SPEEDTEST_PHASE_TIMEOUT,
+) -> float | None:
+    """Stream bytes from ``url`` for ``duration`` seconds. Return bytes/sec.
+
+    Cloudflare's __down endpoint caps each request at ~50 MB, so on a
+    fast connection one response runs out before the duration. We loop
+    and chain requests, accumulating total bytes, until the deadline.
+    """
+    import urllib.request
+    start = time.monotonic()
+    deadline = start + duration
+    bytes_read = 0
+    try:
+        while time.monotonic() < deadline:
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "orca-resource-monitor/1.1"}
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                while time.monotonic() < deadline:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break  # response exhausted; outer loop opens another
+                    bytes_read += len(chunk)
+    except Exception as e:
+        _log.warning("Download speed test failed: %s", e)
+        # Keep partial result if we got at least one full second of data.
+        if bytes_read == 0 or (time.monotonic() - start) < 1.0:
+            return None
+    elapsed = time.monotonic() - start
+    if elapsed <= 0 or bytes_read == 0:
+        return None
+    return bytes_read / elapsed
+
+
+def _measure_upload(
+    url: str = _SPEEDTEST_UP_URL,
+    payload_bytes: int = _SPEEDTEST_UPLOAD_BYTES,
+    timeout: float = _SPEEDTEST_PHASE_TIMEOUT,
+) -> float | None:
+    """Upload a fixed payload to ``url``. Return bytes/sec."""
+    import urllib.request
+    payload = b"\0" * payload_bytes
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={
+            "User-Agent": "orca-resource-monitor/1.1",
+            "Content-Type": "application/octet-stream",
+            "Content-Length": str(payload_bytes),
+        },
+    )
+    start = time.monotonic()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp.read()
+    except Exception as e:
+        _log.warning("Upload speed test failed: %s", e)
+        return None
+    elapsed = time.monotonic() - start
+    if elapsed <= 0:
+        return None
+    return payload_bytes / elapsed
+
+
+def handle_speedtest(script, event=None):
+    """Run a network speed test in the background and report results.
+
+    Spawns a daemon thread so Orca's main thread stays responsive
+    during the ~10 seconds of testing. Speech is marshalled back to
+    the GLib main thread via ``idle_add`` because Speech Dispatcher
+    client state isn't documented as thread-safe. Each phase reports
+    independently — ping, download, upload — so partial failures
+    still produce useful output.
+    """
+    try:
+        from gi.repository import GLib
+        import threading
+    except ImportError as e:
+        _log.error("Speed test setup failed: %s", e)
+        _speak("Speed test unavailable")
+        return True
+
+    def _speak_main(msg: str) -> None:
+        # GLib.idle_add expects a callable returning False to stop.
+        def _do() -> bool:
+            _speak(msg)
+            return False
+        GLib.idle_add(_do)
+
+    _speak("Testing speed. Please wait.")
+
+    def run_test() -> None:
+        try:
+            ping_ms = _measure_ping()
+            if ping_ms is not None:
+                _speak_main(f"Ping: {round(ping_ms)} milliseconds")
+            else:
+                _speak_main("Ping unavailable")
+
+            down_bps = _measure_download()
+            if down_bps:
+                _speak_main(
+                    f"Download: {down_bps / 1_000_000:.1f} megabytes per second"
+                )
+            else:
+                _speak_main("Download test failed")
+
+            up_bps = _measure_upload()
+            if up_bps:
+                _speak_main(
+                    f"Upload: {up_bps / 1_000_000:.1f} megabytes per second"
+                )
+            else:
+                _speak_main("Upload test failed")
+        except Exception as e:
+            _log.error("Speed test thread crashed: %s", e)
+            _speak_main("Speed test failed")
+
+    threading.Thread(target=run_test, daemon=True).start()
     return True
 
 
@@ -526,4 +687,22 @@ def register() -> None:
             )
         )
 
-    _log.info("Resource monitor: %d commands registered", len(commands))
+    # Speed test on Orca+Ctrl+Shift+4 — separate from the Shift+digit
+    # block because it shares the digit '4' with handle_network and
+    # uses a longer-running threaded implementation.
+    speedtest_kb = keybindings.KeyBinding(
+        "4",
+        keybindings.ORCA_CTRL_MODIFIER_MASK | keybindings.SHIFT_MODIFIER_MASK,
+    )
+    manager.add_command(
+        command_manager.KeyboardCommand(
+            name="resmon_speedtest",
+            function=handle_speedtest,
+            group_label=group,
+            description="Run a network speed test (Cloudflare)",
+            desktop_keybinding=speedtest_kb,
+            laptop_keybinding=speedtest_kb,
+        )
+    )
+
+    _log.info("Resource monitor: %d commands registered", len(commands) + 1)

@@ -6,7 +6,7 @@ Replaces Orca's built-in CPU + RAM command with deeper, NVDA-style readouts (per
 
 ## Keybindings
 
-All shortcuts use **Orca+Shift+number**.
+The instant readouts use **Orca+Shift+number**; the speed test adds Ctrl.
 
 | Shortcut | What you hear |
 |---|---|
@@ -20,6 +20,11 @@ All shortcuts use **Orca+Shift+number**.
 | Orca+Shift+8 | Audio output: device name, volume, mute state |
 | Orca+Shift+9 | Audio input: device name, volume, mute state |
 | Orca+Shift+0 | System load (as percentage of capacity), CPU temperature, process count, top process |
+| Orca+Ctrl+Shift+4 | Network speed test: ICMP ping, download, upload — runs in the background, ~10 seconds total |
+
+### Speed test
+
+Speed test traffic uses [`speed.cloudflare.com`](https://speed.cloudflare.com)'s public download/upload endpoints (the same ones Cloudflare's own speed-test tool calls). No signup, no per-user tracking beyond standard CF logs. Ping is a normal ICMP echo to `1.1.1.1`. The test runs on a daemon thread so Orca's UI stays responsive — you'll hear "Testing speed. Please wait." immediately, then each result as it completes.
 
 ## Requirements
 
