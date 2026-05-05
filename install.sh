@@ -12,6 +12,13 @@ END_MARKER="# --- resource-monitor end ---"
 
 LOADER_BLOCK="${BEGIN_MARKER}
 try:
+    import sys as _sys, os as _os
+    _orca_dir = _os.path.join(
+        _os.environ.get(\"XDG_DATA_HOME\", _os.path.expanduser(\"~/.local/share\")),
+        \"orca\"
+    )
+    if _orca_dir not in _sys.path:
+        _sys.path.insert(0, _orca_dir)
     from resource_monitor import register as _resmon_register
     _resmon_register()
 except Exception as _e:
