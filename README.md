@@ -2,25 +2,24 @@
 
 A customisation add-on for the [Orca screen reader](https://orca.gnome.org/) that provides comprehensive system resource monitoring via keyboard shortcuts.
 
-Orca already includes a built-in command for CPU and memory usage (assignable via Orca's keybinding preferences — e.g. Orca+Shift+1). This add-on extends that with eight additional resource commands covering storage, network, battery, uptime, OS info, audio devices, and system load.
+Replaces Orca's built-in CPU + RAM command with deeper, NVDA-style readouts (per-thread CPU breakdown; physical and swap memory) and adds eight further resource commands covering storage, network, battery, uptime, OS info, audio devices, and system load.
 
 ## Keybindings
 
-All shortcuts use **Orca+Shift+number**. Orca+Shift+1 is left free for Orca's native CPU + RAM command.
+All shortcuts use **Orca+Shift+number**.
 
 | Shortcut | What you hear |
 |---|---|
-| Orca+Shift+1 | *(Built-in)* CPU and memory usage — configure in Orca preferences |
-| Orca+Shift+2 | Storage volumes with used/total/percent (BTRFS-aware, deduplicates subvolumes) |
-| Orca+Shift+3 | Network status: connection name, Wi-Fi/Ethernet, signal or speed, IP address |
-| Orca+Shift+4 | Battery: percentage, charging state, estimated time remaining |
+| Orca+Shift+1 | CPU usage: average load and per-thread breakdown (NVDA-style) |
+| Orca+Shift+2 | RAM and swap: physical and swap memory used/total/percent (`free -h`-style) |
+| Orca+Shift+3 | Storage volumes with used/total/percent (BTRFS-aware, deduplicates subvolumes) |
+| Orca+Shift+4 | Network status: connection name, Wi-Fi/Ethernet, signal or speed, IP address |
+| Orca+Shift+5 | Battery: percentage, charging state, estimated time remaining |
 | Orca+Shift+6 | System uptime |
 | Orca+Shift+7 | OS info: distribution, kernel version, architecture |
 | Orca+Shift+8 | Audio output: device name, volume, mute state |
 | Orca+Shift+9 | Audio input: device name, volume, mute state |
 | Orca+Shift+0 | System load (as percentage of capacity), CPU temperature, process count, top process |
-
-Orca+Shift+5 is left unassigned for future use.
 
 ## Requirements
 

@@ -1,9 +1,10 @@
 """Orca Resource Monitor Add-on
 
 Provides system resource monitoring commands bound to Orca+Shift+number keys:
-  2: Storage volumes    3: Network status     4: Battery info
-  6: Uptime             7: OS info            8: Audio output
-  9: Audio input        0: System load + temps
+  1: CPU usage          2: RAM and swap       3: Storage volumes
+  4: Network status     5: Battery info       6: Uptime
+  7: OS info            8: Audio output       9: Audio input
+  0: System load + temps
 """
 
 from __future__ import annotations
@@ -41,8 +42,10 @@ def _format_size(bytes_val: float) -> str:
         return f"{bytes_val / 1024**3:.1f} gigabytes"
     elif bytes_val >= 1024**2:
         return f"{bytes_val / 1024**2:.1f} megabytes"
-    else:
+    elif bytes_val >= 1024:
         return f"{bytes_val / 1024:.1f} kilobytes"
+    else:
+        return f"{int(bytes_val)} bytes"
 
 
 def _format_duration(seconds: float) -> str:
@@ -78,6 +81,50 @@ _MOUNT_LABELS = {
 }
 
 _REAL_FS_TYPES = {"btrfs", "ext4", "ext3", "ext2", "xfs", "f2s", "ntfs", "vfat", "exfat", "zfs"}
+
+
+def handle_cpu(script, event=None):
+    """Present overall and per-thread CPU usage."""
+    try:
+        # interval=0.1 blocks ~100ms and gives an accurate snapshot;
+        # we derive the average from the per-cpu list so the average
+        # and the per-thread numbers are from the same window.
+        per_cpu = psutil.cpu_percent(interval=0.1, percpu=True)
+        if not per_cpu:
+            _speak("CPU information unavailable")
+            return True
+        avg = sum(per_cpu) / len(per_cpu)
+        parts = [f"Average CPU load {avg:.1f} percent"]
+        for i, pct in enumerate(per_cpu, start=1):
+            parts.append(f"Thread {i}: {pct:.1f} percent")
+        _speak(". ".join(parts))
+    except Exception as e:
+        _log.error("CPU info failed: %s", e)
+        _speak("CPU information unavailable")
+    return True
+
+
+def handle_ram(script, event=None):
+    """Present physical and swap memory usage."""
+    try:
+        vm = psutil.virtual_memory()
+        sm = psutil.swap_memory()
+        physical = (
+            f"Physical RAM: {_format_size(vm.used)} of "
+            f"{_format_size(vm.total)} used, {vm.percent:.1f} percent"
+        )
+        if sm.total > 0:
+            swap = (
+                f"Swap: {_format_size(sm.used)} of "
+                f"{_format_size(sm.total)} used, {sm.percent:.1f} percent"
+            )
+            _speak(f"{physical}. {swap}")
+        else:
+            _speak(f"{physical}. No swap configured")
+    except Exception as e:
+        _log.error("RAM info failed: %s", e)
+        _speak("RAM information unavailable")
+    return True
 
 
 def handle_storage(script, event=None):
@@ -416,9 +463,11 @@ def register() -> None:
     group = "Resource Monitor"
 
     commands = [
-        ("resmon_storage", handle_storage, "Present storage volumes", "2"),
-        ("resmon_network", handle_network, "Present network status", "3"),
-        ("resmon_battery", handle_battery, "Present battery with time remaining", "4"),
+        ("resmon_cpu", handle_cpu, "Present CPU usage", "1"),
+        ("resmon_ram", handle_ram, "Present RAM and swap usage", "2"),
+        ("resmon_storage", handle_storage, "Present storage volumes", "3"),
+        ("resmon_network", handle_network, "Present network status", "4"),
+        ("resmon_battery", handle_battery, "Present battery with time remaining", "5"),
         ("resmon_uptime", handle_uptime, "Present system uptime", "6"),
         ("resmon_os_info", handle_os_info, "Present operating system info", "7"),
         ("resmon_audio_output", handle_audio_output, "Present audio output device and volume", "8"),
