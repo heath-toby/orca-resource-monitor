@@ -11,7 +11,7 @@ Plus Orca+Ctrl+Shift+4 for an on-demand network speed test.
 
 from __future__ import annotations
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 import logging
 import os
@@ -550,8 +550,22 @@ def _estimate_battery_time(battery) -> str | None:
     return None
 
 
+_UPOWER_DISPLAY_DEVICE = "/org/freedesktop/UPower/devices/DisplayDevice"
+
+
 def _upower_time_remaining(power_plugged: bool) -> str | None:
     """Ask UPower for a smoothed time-to-empty / time-to-full estimate.
+
+    Queries UPower's canonical synthetic ``DisplayDevice`` rather than
+    enumerating with ``upower -e`` and string-matching battery names.
+    Two reasons:
+
+      * ``DisplayDevice`` is the aggregated primary battery, so we avoid
+        accidentally picking up a Bluetooth / HID peripheral battery
+        (e.g. ``battery_hidpp_battery_0`` from a wireless mouse) that
+        happens to enumerate before the laptop's battery.
+      * Halves the worst-case main-thread block when the upower daemon
+        is hung — one subprocess call instead of two.
 
     Returns a formatted duration string, or None if UPower isn't
     available, the daemon isn't running, no battery is reported, or
@@ -561,21 +575,13 @@ def _upower_time_remaining(power_plugged: bool) -> str | None:
     # Force C locale: upower otherwise emits decimals using the user's
     # locale separator (e.g. "3,6 hours" in de_DE), which float() won't
     # parse, silently disabling this whole code path for non-English
-    # locales. Same trick for any future label-string parsing — though
-    # the current "time to empty" / "time to full" labels stay English
-    # under LC_ALL=C.
+    # locales. Same trick covers any future label-string parsing —
+    # though the current "time to empty" / "time to full" labels stay
+    # English under LC_ALL=C.
     upower_env = {**os.environ, "LC_ALL": "C"}
-    devices = _run_cmd(["upower", "-e"], timeout=2, env=upower_env)
-    if not devices:
-        return None
-    bat_path = None
-    for line in devices.splitlines():
-        if "battery_" in line.lower():
-            bat_path = line.strip()
-            break
-    if not bat_path:
-        return None
-    info = _run_cmd(["upower", "-i", bat_path], timeout=2, env=upower_env)
+    info = _run_cmd(
+        ["upower", "-i", _UPOWER_DISPLAY_DEVICE], timeout=2, env=upower_env,
+    )
     if not info:
         return None
 

@@ -5,6 +5,25 @@ All notable changes to Orca Resource Monitor are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.2] — 2026-05-05
+
+Both items deferred from the v1.0.1 audit, addressed by a single
+change to the upower call.
+
+### Changed
+
+- **UPower time-remaining now queries the synthetic
+  `DisplayDevice`** (`/org/freedesktop/UPower/devices/DisplayDevice`)
+  rather than enumerating devices with `upower -e` and string-matching
+  battery names. Two benefits:
+  - Avoids accidentally picking up a Bluetooth / HID peripheral
+    battery (e.g. a wireless mouse's `battery_hidpp_battery_0` that
+    happens to enumerate before the laptop's `battery_BAT0`) on
+    systems with paired peripherals.
+  - One subprocess call instead of two — halves the worst-case
+    main-thread block from ~4 s to ~2 s when the upower daemon is
+    hung.
+
 ## [1.0.1] — 2026-05-05
 
 A polish release. The four items deferred from the v1.0 audit, plus a
