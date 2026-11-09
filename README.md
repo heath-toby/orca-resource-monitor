@@ -43,7 +43,18 @@ cd orca-resource-monitor
 orca --replace
 ```
 
-The installer copies `resource_monitor.py` into `~/.local/share/orca/` and appends a loader block to `orca-customizations.py`. It does not modify any other add-ons.
+The installer copies `resource_monitor.py` into
+`~/.local/share/orca/extensions/` and approves it with
+`orca --approve-extension resource_monitor.py`. Orca approves an extension by
+a hash over its contents, so re-run `./install.sh` after editing the file or
+Orca will decline to load it.
+
+If you are coming from a version before 2.0.0, the installer also removes the
+old loader block from `orca-customizations.py` and the copy it loaded from
+`~/.local/share/orca/`. Leaving those in place registered all ten commands a
+second time on every Orca start. It does not modify any other add-ons.
+
+It needs `psutil`, and checks for it before installing anything.
 
 ## Uninstallation
 
@@ -52,11 +63,17 @@ The installer copies `resource_monitor.py` into `~/.local/share/orca/` and appen
 orca --replace
 ```
 
-The uninstaller removes only the resource monitor module and its loader block from `orca-customizations.py`, leaving all other add-ons intact.
+The uninstaller revokes Orca's approval, removes the extension, and clears
+the pre-2.0.0 loader block if it is still there. It leaves all other add-ons
+intact.
 
 ## How it works
 
-The add-on registers commands with Orca's `CommandManager` at startup via `orca-customizations.py`. Each command is bound to a keyboard shortcut using Orca's standard keybinding system, so they appear in Orca's keybinding preferences and can be reassigned by the user.
+The add-on is an Orca 51 user extension: a subclass of
+`orca.extension.Extension` whose `_get_commands()` returns a
+`KeyboardCommand` per report. Orca registers them through its
+`CommandManager`, so they appear in Orca's keybinding preferences and can be
+reassigned.
 
 Speech output uses Orca's `presentation_manager` for proper integration with the active speech synthesiser and braille display.
 
@@ -76,3 +93,10 @@ On BTRFS filesystems, multiple subvolumes (/, /home, /var/log, etc.) share the s
 ## License
 
 MIT
+
+## Updates
+
+This add-on declares Orca's `WEBSITE` metadata field, so
+[Extension Updater](https://github.com/heath-toby/orca-extension-updater) can
+find its releases and offer them. Orca reads that field without importing the
+module.

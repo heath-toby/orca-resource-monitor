@@ -1,4 +1,4 @@
-"""Orca Resource Monitor Add-on
+"""Orca Resource Monitor extension.
 
 Provides system resource monitoring commands bound to Orca+Shift+number keys:
   1: CPU usage          2: RAM and swap       3: Storage volumes
@@ -7,11 +7,15 @@ Provides system resource monitoring commands bound to Orca+Shift+number keys:
   0: System load + temps
 
 Plus Orca+Ctrl+Shift+4 for an on-demand network speed test.
+
+Orca 51 user extension. Install to $XDG_DATA_HOME/orca/extensions/ and
+approve with ``orca --approve-extension resource_monitor.py``; Orca
+re-checks the file hash on every start, so re-approve after editing.
 """
 
 from __future__ import annotations
 
-__version__ = "1.0.2"
+__version__ = "2.0.0"
 
 import logging
 import os
@@ -24,6 +28,8 @@ import urllib.request
 import psutil
 
 from orca import command_manager, keybindings, presentation_manager
+from orca.command import Command
+from orca.extension import Extension
 
 _log = logging.getLogger("orca-resource-monitor")
 
@@ -130,7 +136,7 @@ _MOUNT_LABELS = {
 _REAL_FS_TYPES = {"btrfs", "ext4", "ext3", "ext2", "xfs", "f2fs", "ntfs", "vfat", "exfat", "zfs"}
 
 
-def handle_cpu(script, event=None):
+def handle_cpu() -> bool:
     """Present overall and per-thread CPU usage."""
     try:
         # interval=0.1 blocks ~100ms and gives an accurate snapshot;
@@ -151,7 +157,7 @@ def handle_cpu(script, event=None):
     return True
 
 
-def handle_ram(script, event=None):
+def handle_ram() -> bool:
     """Present physical and swap memory usage."""
     try:
         vm = psutil.virtual_memory()
@@ -174,7 +180,7 @@ def handle_ram(script, event=None):
     return True
 
 
-def handle_storage(script, event=None):
+def handle_storage() -> bool:
     """Present storage volume information."""
     try:
         partitions = psutil.disk_partitions(all=False)
@@ -221,7 +227,7 @@ def handle_storage(script, event=None):
     return True
 
 
-def handle_network(script, event=None):
+def handle_network() -> bool:
     """Present network connection status."""
     try:
         output = _run_cmd(
@@ -429,7 +435,7 @@ def _measure_upload(
     return payload_bytes / elapsed
 
 
-def handle_speedtest(script, event=None):
+def handle_speedtest() -> bool:
     """Run a network speed test in the background and report results.
 
     Spawns a daemon thread so Orca's main thread stays responsive
@@ -630,7 +636,7 @@ def _ratio_to_duration(full, now, rate, power_plugged):
     return _format_duration(now / rate * 3600)
 
 
-def handle_battery(script, event=None):
+def handle_battery() -> bool:
     """Present battery status with time remaining."""
     try:
         battery = psutil.sensors_battery()
@@ -660,7 +666,7 @@ def handle_battery(script, event=None):
     return True
 
 
-def handle_uptime(script, event=None):
+def handle_uptime() -> bool:
     """Present system uptime."""
     try:
         uptime_secs = time.time() - psutil.boot_time()
@@ -676,13 +682,15 @@ def _read_os_release() -> str:
         with open("/etc/os-release") as f:
             for line in f:
                 if line.startswith("PRETTY_NAME="):
-                    return line.split("=", 1)[1].strip().strip('"')
+                    # os-release values may be single- or double-quoted;
+                    # Gentoo uses single quotes, so strip both.
+                    return line.split("=", 1)[1].strip().strip("\"'")
     except OSError:
         pass
     return "Unknown distribution"
 
 
-def handle_os_info(script, event=None):
+def handle_os_info() -> bool:
     """Present operating system information."""
     try:
         distro = _read_os_release()
@@ -732,7 +740,7 @@ def _get_wpctl_device_info(target: str) -> tuple[str, str]:
     return device_name, volume_str
 
 
-def handle_audio_output(script, event=None):
+def handle_audio_output() -> bool:
     """Present audio output device and volume."""
     try:
         name, volume = _get_wpctl_device_info("@DEFAULT_AUDIO_SINK@")
@@ -746,7 +754,7 @@ def handle_audio_output(script, event=None):
     return True
 
 
-def handle_audio_input(script, event=None):
+def handle_audio_input() -> bool:
     """Present audio input device and volume."""
     try:
         name, volume = _get_wpctl_device_info("@DEFAULT_AUDIO_SOURCE@")
@@ -760,7 +768,7 @@ def handle_audio_input(script, event=None):
     return True
 
 
-def handle_system_load(script, event=None):
+def handle_system_load() -> bool:
     """Present system load, temperatures, and top process."""
     try:
         parts = []
@@ -833,54 +841,70 @@ def handle_system_load(script, event=None):
     return True
 
 
-def register() -> None:
-    """Register all resource monitor commands with Orca."""
+# --- Extension ---------------------------------------------------------
 
-    manager = command_manager.get_manager()
-    group = "Resource Monitor"
+# name, function, description, keysym. The digit block all shares
+# Orca+Shift; the speed test is listed separately below because it
+# reuses digit '4' under a different modifier.
+_COMMANDS = (
+    ("resmon_cpu", handle_cpu, "Present CPU usage", "1"),
+    ("resmon_ram", handle_ram, "Present RAM and swap usage", "2"),
+    ("resmon_storage", handle_storage, "Present storage volumes", "3"),
+    ("resmon_network", handle_network, "Present network status", "4"),
+    ("resmon_battery", handle_battery, "Present battery with time remaining", "5"),
+    ("resmon_uptime", handle_uptime, "Present system uptime", "6"),
+    ("resmon_os_info", handle_os_info, "Present operating system info", "7"),
+    ("resmon_audio_output", handle_audio_output, "Present audio output device and volume", "8"),
+    ("resmon_audio_input", handle_audio_input, "Present audio input device and volume", "9"),
+    ("resmon_system_load", handle_system_load, "Present system load and temperatures", "0"),
+)
 
-    commands = [
-        ("resmon_cpu", handle_cpu, "Present CPU usage", "1"),
-        ("resmon_ram", handle_ram, "Present RAM and swap usage", "2"),
-        ("resmon_storage", handle_storage, "Present storage volumes", "3"),
-        ("resmon_network", handle_network, "Present network status", "4"),
-        ("resmon_battery", handle_battery, "Present battery with time remaining", "5"),
-        ("resmon_uptime", handle_uptime, "Present system uptime", "6"),
-        ("resmon_os_info", handle_os_info, "Present operating system info", "7"),
-        ("resmon_audio_output", handle_audio_output, "Present audio output device and volume", "8"),
-        ("resmon_audio_input", handle_audio_input, "Present audio input device and volume", "9"),
-        ("resmon_system_load", handle_system_load, "Present system load and temperatures", "0"),
-    ]
 
-    for name, func, desc, key in commands:
-        kb = keybindings.KeyBinding(key, keybindings.ORCA_SHIFT_MODIFIER_MASK)
-        manager.add_command(
+class ResourceMonitor(Extension):
+    """Presents system resource information on demand."""
+
+    GROUP_LABEL = "Resource Monitor"
+    DESCRIPTION = "Speaks CPU, memory, storage, network, battery, uptime, OS, audio device and system load on Orca+Shift+number, plus a network speed test on Orca+Ctrl+Shift+4."
+    VERSION = "2.0.0"  # keep in sync with __version__; read by AST, must be a literal
+    AUTHOR = "Toby"
+    # Read by Orca without importing this module, and by Extension Updater
+    # to find this add-on's releases. Orca shows it as a link in
+    # Preferences -> User Extensions -> Info.
+    WEBSITE = "https://github.com/heath-toby/orca-resource-monitor"
+
+    def _get_commands(self) -> list[Command]:
+        """Returns this extension's keyboard commands."""
+
+        commands: list[Command] = []
+        for name, function, description, key in _COMMANDS:
+            keybinding = keybindings.KeyBinding(key, keybindings.ORCA_SHIFT_MODIFIER_MASK)
+            commands.append(
+                command_manager.KeyboardCommand(
+                    name=name,
+                    function=function,
+                    group_label=self.GROUP_LABEL,
+                    description=description,
+                    desktop_keybinding=keybinding,
+                    laptop_keybinding=keybinding,
+                )
+            )
+
+        # Speed test on Orca+Ctrl+Shift+4 — separate from the Shift+digit
+        # block because it shares the digit '4' with handle_network and
+        # uses a longer-running threaded implementation.
+        speedtest_keybinding = keybindings.KeyBinding(
+            "4",
+            keybindings.ORCA_CTRL_MODIFIER_MASK | keybindings.SHIFT_MODIFIER_MASK,
+        )
+        commands.append(
             command_manager.KeyboardCommand(
-                name=name,
-                function=func,
-                group_label=group,
-                description=desc,
-                desktop_keybinding=kb,
-                laptop_keybinding=kb,
+                name="resmon_speedtest",
+                function=handle_speedtest,
+                group_label=self.GROUP_LABEL,
+                description="Run a network speed test (Cloudflare)",
+                desktop_keybinding=speedtest_keybinding,
+                laptop_keybinding=speedtest_keybinding,
             )
         )
 
-    # Speed test on Orca+Ctrl+Shift+4 — separate from the Shift+digit
-    # block because it shares the digit '4' with handle_network and
-    # uses a longer-running threaded implementation.
-    speedtest_kb = keybindings.KeyBinding(
-        "4",
-        keybindings.ORCA_CTRL_MODIFIER_MASK | keybindings.SHIFT_MODIFIER_MASK,
-    )
-    manager.add_command(
-        command_manager.KeyboardCommand(
-            name="resmon_speedtest",
-            function=handle_speedtest,
-            group_label=group,
-            description="Run a network speed test (Cloudflare)",
-            desktop_keybinding=speedtest_kb,
-            laptop_keybinding=speedtest_kb,
-        )
-    )
-
-    _log.info("Resource monitor: %d commands registered", len(commands) + 1)
+        return commands

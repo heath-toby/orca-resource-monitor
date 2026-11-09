@@ -5,6 +5,41 @@ All notable changes to Orca Resource Monitor are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.0.0] — 2026-11-09
+
+### Changed
+
+- **Resource Monitor is now an Orca 51 user extension.** It subclasses
+  `orca.extension.Extension`, installs into
+  `~/.local/share/orca/extensions/resource_monitor.py`, and is approved by
+  content hash with `orca --approve-extension`. It no longer appends a loader
+  block to `orca-customizations.py`.
+
+  The migration itself was written months ago but never reached this
+  repository: the extension was installed by hand and the repository kept the
+  1.0.2 `register()` module and its pre-extension installer. This release is
+  that work, written back where it belongs.
+
+### Fixed
+
+- **All ten commands were being registered twice on every Orca start.** The
+  pre-2.0.0 loader block in `orca-customizations.py` stayed behind after the
+  extension was installed, so the extension registered the commands and then
+  the block imported the old module and registered the same ten names again.
+  Orca logs "Unexpected re-registration" and the later registration silently
+  replaces the earlier one, which left it ambiguous which copy was running.
+  `install.sh` now removes that block and the module it loaded, and
+  `uninstall.sh` does the same.
+
+### Added
+
+- Declares `WEBSITE`, so [Extension Updater][eu] can find this add-on's
+  releases. Orca reads the field with `ast`, without importing the module.
+- `install.sh` checks for `psutil` up front and fails with a clear message
+  rather than installing an add-on that cannot run.
+
+[eu]: https://github.com/heath-toby/orca-extension-updater
+
 ## [1.0.2] — 2026-05-05
 
 Both items deferred from the v1.0.1 audit, addressed by a single
